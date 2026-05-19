@@ -1,163 +1,205 @@
-# Personal Email Assistant
+# AI-Powered Email Assistant
 
-A smart AI-powered assistant that integrates with your Gmail inbox, understands email context using LLMs, and takes automated actions like replying, scheduling calendar events, performing web searches, and sending notifications via Slack.
-
----
-
-## Overview
-
-This assistant reads emails from your Gmail inbox, summarizes them using a large language model (LLM), classifies their intent, and then takes appropriate actions such as:
-- Generating and sending contextual replies
-- Extracting and scheduling meetings on Google Calendar
-- Searching the web when necessary
-- Sending alerts for important emails via Slack
-
-It also stores all email data in a local MySQL database for persistent context and analysis.
+A background email pipeline that fetches unread Gmail emails, enriches them with AI using LangChain + Gemini, stores results in MySQL, sends Slack alerts for meetings and high-priority emails, and creates Gmail drafts for replies.
 
 ---
 
-## Setup Instructions
+## Architecture
+
+```
+Gmail API
+    ↓
+fetch_latest_unread()        # one unread email per tick
+    ↓
+parse_message()              # extract headers, body, attachments
+    ↓
+enrichment_chain             # RunnableParallel — 4 concurrent LLM calls
+    ├── summarizer_chain     → 2-3 sentence summary
+    ├── classifier_chain     → Finance / Travel / Meetings / Support / Personal / Spam / General
+    ├── extract_chain        → EmailKeyInfo (dates, amounts, action, deadline, meeting details)
+    └── priority_chain       → High / Mid / Low
+    ↓
+RunnableBranch
+    ├── meeting detected     → Slack alert (manual scheduling decision)
+    ├── High priority        → Gmail draft created + Slack alert
+    └── everything else      → store only
+    ↓
+MySQL (emails table)
+```
+
+---
+
+## Stack
+
+| Layer | Tool |
+|---|---|
+| LLM | Gemini 2.0 Flash via `langchain-google-genai` |
+| Orchestration | LangChain `RunnableParallel` |
+| Email fetch | Gmail API (`google-api-python-client`) |
+| Draft creation | LangChain `GmailCreateDraft` toolkit |
+| Structured output | Pydantic `EmailKeyInfo` via `with_structured_output` |
+| Database | MySQL via `mysql-connector-python` |
+| Alerts | Slack Bot API |
+| Scheduling | `schedule` library (every 5 minutes) |
+
+---
+
+## Project Structure
+
+```
+src/
+├── Controller/
+│   └── email_pipeline.py       ← main entry point
+├── Database/
+│   └── Email_storage.py        ← fetch, parse, store emails
+├── services/
+│   ├── Gmail_services.py       ← OAuth2 auth (runs once)
+│   ├── Slack_services.py       ← send_meeting_alert, send_priority_alert
+│   ├── Reply_services.py       ← LLM reply draft + GmailCreateDraft
+│   └── Calender_services.py    ← calendar_node (wired in future)
+└── Utils/
+    └── Enrichment_chain.py     ← RunnableParallel + EmailKeyInfo schema
+CLAUDE.md                       ← project context for Claude Code
+```
+
+---
+
+## Setup
 
 ### 1. Clone the Repository
+
 ```bash
-git clone https://github.com/PiyushG1816/Piyush-Gupta-wasserstoff-AiInternTask.git
-cd Personal-Email-Assistant
+git clone https://github.com/PiyushG1816/AI-Powered-Email-Assistant.git
+cd AI-Powered-Email-Assistant
 ```
 
-### 2. Install Dependencies
+### 2. Create and Activate Virtual Environment
+
 ```bash
-pip install -r requirements.txt
+python -m venv 1env
+1env\Scripts\activate      # Windows
 ```
 
-### 3. API Credentials
+### 3. Install Dependencies
 
-#### Gmail API
+```bash
+pip install -r Requirements.txt
+```
+
+### 4. Gmail API Credentials
+
 - Go to https://console.cloud.google.com/
-- Create a project and enable the **Gmail API** and **Google Calendar API**
-- Configure OAuth2 consent screen
-- Download the `credentials.json` and place it in the root directory
-
-#### Google Custom Search API
-- Go to https://programmablesearchengine.google.com/
-- Create a custom search engine and get the `cx` and `API key`
-- Add them to your `.env`:
-```env
-GOOGLE_API_KEY=your_api_key
-GOOGLE_CSE_ID=your_cse_id
-```
-
-#### Slack Webhook
-- Create a bot in your Slack workspace and generate a bot token
-- Add the token to `.env`:
-```env
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_CHANNEL_ID=channel_id_here
-```
-
----
-
-## How It Works
-
-### 1. Email Fetching
-- Uses the Gmail API with OAuth2 to fetch the latest emails from the inbox.
-- Parses key fields: sender, subject, body, attachments, timestamp, thread ID.
-- Stores new emails in a MySQL database and avoids duplicates.
-
-### 2. Summarization (LLM Integration)
-- The email body and subject are passed to a Hugging Face model (e.g., `facebook/bart-large-cnn`) to generate a concise summary.
-
-### 3. Classification
-- The summary and content are passed through a classifier (custom or fine-tuned) to label the email intent (e.g., "Meeting Request", "Support Query", etc.).
-
-### 4. Action Routing
-- **Search:** If the email suggests a query, Google Custom Search is triggered.
-- **Calendar:** If it mentions scheduling, the assistant extracts time/location and creates a Google Calendar event.
-- **Reply:** Generates a polite, context-aware reply and sends it using Gmail API.
-- **Slack Notification:** For high-importance emails, alerts are sent to a Slack channel.
-
----
-
-## Running the Assistant
+- Create a project and enable **Gmail API** and **Google Calendar API**
+- Configure OAuth2 consent screen with these scopes:
+  - `gmail.readonly`
+  - `gmail.send`
+  - `gmail.modify`
+  - `gmail.labels`
+  - `calendar.events`
+- Download `credentials.json` and place it in the project root
+- Run auth once to generate `token.pickle`:
 
 ```bash
-python Assistant.py
+python src/services/Gmail_services.py
 ```
 
-The script will:
-- Authenticate Gmail & fetch new emails
-- Summarize and classify each email
-- Perform actions (search, calendar, reply, Slack)
-- Log outputs in terminal
+### 5. Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+GOOGLE_API_KEY=your_gemini_api_key
+SLACK_TOKEN=xoxb-your-slack-bot-token
+SLACK_CHANNEL=#general
+```
+
+### 6. MySQL Setup
+
+Create the database and table:
+
+```sql
+CREATE DATABASE Email_assistant;
+
+USE Email_assistant;
+
+CREATE TABLE emails (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    message_id VARCHAR(255) UNIQUE,
+    sender VARCHAR(255),
+    recipient VARCHAR(255),
+    subject VARCHAR(500),
+    timestamp DATETIME,
+    body TEXT,
+    has_attachment VARCHAR(3),
+    thread_id VARCHAR(255),
+    summary TEXT,
+    priority VARCHAR(10),
+    category VARCHAR(50),
+    key_info JSON
+);
+```
 
 ---
 
-## Architecture Diagram
+## Running the Pipeline
 
-You can generate your own using [draw.io](https://draw.io) or tools like Excalidraw.
-
+```bash
+python -m src.Controller.email_pipeline
 ```
-+-------------+     +--------------+     +----------------+     +--------------+
-| Gmail Inbox | --> | Fetch Emails | --> |   Summarizer   | --> | Classifier   |
-+-------------+     +--------------+     +----------------+     +--------------+
-                                                               |
-                                                               v
-                                                   +------------------------+
-                                                   | Action Decision Engine |
-                                                   +------------------------+
-                                                      |    |       |       |
-                                                      v    v       v       v
-                                               +--------+ +-------+ +---------+
-                                               | Search | | Reply | | Calendar|
-                                               +--------+ +-------+ +---------+
-                                                      |
-                                                      v
-                                                +-------------+
-                                                | Slack Alert |
-                                                +-------------+
+
+The pipeline will:
+1. Authenticate Gmail
+2. Fetch the latest unread email
+3. Run all 4 enrichment chains concurrently
+4. Route based on meeting detection or priority
+5. Store enriched email in MySQL
+6. Repeat every 5 minutes
+
+---
+
+## Conditional Routing Logic
+
+| Condition | Action |
+|---|---|
+| `meeting_title` is not None | Slack alert sent with meeting details |
+| `priority == "high"` AND `action_required` is not empty | Gmail draft created + Slack alert |
+| Everything else | Store in MySQL only |
+
+---
+
+## EmailKeyInfo Schema
+
+Structured output enforced via Pydantic + `with_structured_output`:
+
+```python
+class EmailKeyInfo(BaseModel):
+    dates: list[str]                  # any dates mentioned
+    amounts: list[str]                # monetary amounts
+    action_required: str              # action needed from recipient
+    deadline: str | None             # deadline if mentioned
+    meeting_title: str | None        # populated only for meeting emails
+    meeting_date: str | None         # YYYY-MM-DD
+    meeting_time: str | None         # HH:MM
+    meeting_duration_minutes: int | None
 ```
 
 ---
 
-## Database Schema
+## Troubleshooting
 
-- `emails` table stores:
-  - `id`, `sender`, `recipient`, `subject`, `body`, `summary`, `timestamp`, `thread_id`, `label`, `has_attachment`
-
----
-
-## Example Output
-
-Email:
-```
-Subject: Meeting Request
-Body: Can we schedule a call to discuss the Q2 roadmap?
-```
-
-Summary:
-> "Request to schedule a meeting to discuss the Q2 roadmap."
-
-Classification:
-> "Meeting Request"
-
-Actions:
-- Extracts meeting intent
-- Schedules event via Google Calendar
-- Sends polite confirmation reply
+| Error | Fix |
+|---|---|
+| `ModuleNotFoundError: No module named 'src'` | Run from project root using `python -m src.Controller.email_pipeline` |
+| `token.pickle not found` | Run `python src/services/Gmail_services.py` to authenticate |
+| `Failed to send Slack message` | Check `SLACK_TOKEN` in `.env` |
+| Gemini returns wrong structure | Already handled — `with_structured_output` enforces `EmailKeyInfo` schema |
+| `pickle.UnpicklingError` | Delete `token.pickle` and re-authenticate |
 
 ---
 
-## ❗ Troubleshooting
+## Planned Features
 
-- **429 Error from Google API:** Quota exceeded; retry after 1:30 PM IST
-- **OAuth Token Expired:** Delete `token.json` and re-authenticate
-- **No Emails Fetched:** Check Gmail API scopes or inbox filters
-
----
-
-## 📌 Future Improvements
-- Web UI to visualize email summaries and actions
-- Support for attachments and PDF parsing
-- Enhanced LLM prompt tuning for specific domains
-
-
-
+- Slack Yes/No flow for manual calendar scheduling
+- Multi-email processing per tick with `historyId` incremental sync
+- Web UI dashboard for email summaries and routing decisions
+- RAG layer to query stored emails conversationally

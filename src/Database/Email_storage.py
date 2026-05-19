@@ -1,14 +1,16 @@
 import mysql.connector
-import os
-import base64
-import re
+import os ,sys, re, base64
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from datetime import datetime
+from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-import pickle
 
-ATTACHMENTS_DIR = "attachments"
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'services'))
+from Gmail_services import authenticate_gmail_api
+
+def get_gmail_service():
+    creds = authenticate_gmail_api()
+    return build("gmail", "v1", credentials=creds)
 
 def connect_db():
     db = mysql.connector.connect(
@@ -21,12 +23,12 @@ def connect_db():
 
 def store_email(data):
     db, cursor = connect_db()
-
     query = """
         INSERT INTO emails (
-            message_id, sender, recipient, subject, timestamp, body, has_attachment,thread_id
+            message_id, sender, recipient, subject, timestamp, body, 
+            has_attachment, thread_id, summary, priority, category
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             sender = VALUES(sender),
             recipient = VALUES(recipient),
@@ -34,7 +36,10 @@ def store_email(data):
             timestamp = VALUES(timestamp),
             body = VALUES(body),
             has_attachment = VALUES(has_attachment),
-            thread_id = VALUES(thread_id)
+            thread_id = VALUES(thread_id),
+            summary = VALUES(summary),
+            priority = VALUES(priority),
+            category = VALUES(category)
     """
     cursor.execute(query, data)
     db.commit()
@@ -98,51 +103,50 @@ def store_attachment(email_id, filename, file_path):
     cursor.close()
     db.close()
 
-def attachments(service, msg_data, email_id):
+def has_attachments(service, msg_data, email_id):
     parts = msg_data.get("payload", {}).get("parts", [])
     for part in parts:
         if part.get("filename"):  # Attachment exists
             return "Yes"
     return "No"
 
-def fetch_emails_with_attachments():
-    with open("token.pickle", "rb") as f:
-        creds = pickle.load(f)
-
-    service = build("gmail", "v1", credentials=creds)
-    results = service.users().messages().list(userId="me", maxResults=10).execute()
+def fetch_latest_unread(service):
+    results = service.users().messages().list(
+        userId="me",
+        labelIds=["UNREAD"],
+        maxResults=1
+    ).execute()
     messages = results.get("messages", [])
+    if not messages:
+        return None
+    return service.users().messages().get(
+        userId="me",
+        id=messages[0]["id"],
+        format="full"        # ← this is what you're missing
+    ).execute()
 
-    email_list = []
-    for msg in messages:
-        msg_data = service.users().messages().get(userId="me", id=msg["id"]).execute()
-        headers = msg_data["payload"]["headers"]
+def parse_message(msg_data) -> dict:
+    headers = msg_data["payload"]["headers"]
+    return {
+        "id": msg_data["id"],
+        "thread_id": msg_data.get("threadId"),
+        "sender": next((h["value"] for h in headers if h["name"] == "From"), "Unknown"),
+        "recipient": extract_email_address(
+            next((h["value"] for h in headers if h["name"] == "To"), "Unknown")
+        ),
+        "subject": next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject"),
+        "timestamp": datetime.fromtimestamp(int(msg_data["internalDate"]) / 1000, tz=timezone.utc),
+        "body": extract_body(msg_data["payload"]),
+        "has_attachment": has_attachments(None, msg_data, msg_data["id"])
+    }
 
-        message_id = msg_data["id"]
-        thread_id = msg_data.get("threadId")
-        sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
-        recipient_raw = next((h["value"] for h in headers if h["name"] == "To"), "Unknown")
-        recipient = extract_email_address(recipient_raw)        
-        subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
-        timestamp = datetime.utcfromtimestamp(int(msg_data["internalDate"]) / 1000)
-
-        body = extract_body(msg_data["payload"])
-
-        has_attachment = attachments(service, msg_data, message_id)
-        attachment_status = "Yes" if has_attachment else "No"
-
-        store_email((message_id, sender, recipient, subject, timestamp, body,  has_attachment, thread_id))
-
-        # Add to list for further use
-        email_list.append({
-            "id": message_id,
-            "sender": sender,
-            "recipient": recipient,
-            "subject": subject,
-            "timestamp": timestamp,
-            "body": body,
-            "has_attachment": has_attachment
-        })
-
-    return email_list
-
+if __name__ == "__main__":
+    service = get_gmail_service()
+    raw = fetch_latest_unread(service)
+    if raw:
+        email = parse_message(raw)
+        print(email["subject"])
+        print(email["body"][:200])
+        print("Fetched successfully (smoke test only — pipeline writes via email_pipeline.py)")
+    else:
+        print("No unread emails")

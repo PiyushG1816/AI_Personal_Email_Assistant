@@ -1,9 +1,13 @@
 google-auth-oauthlib 
 google-auth-httplib2 
 google-api-python-client 
-imaplib2
 requests
 beautifulsoup4
 mysql-connector-python
-transformers
-torch
+langchain
+langchain-core
+python-dotenv
+langchain-google-genai
+google-generativeai
+langchain-google-community
+schedule

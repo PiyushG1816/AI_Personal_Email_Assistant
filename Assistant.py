@@ -1,5 +1,4 @@
-from src.Controller.Main import Personal_email_assistant
+from src.Controller.email_pipeline import run_pipeline
 
 print("Starting Personal Email Assistant...")
-result = Personal_email_assistant()
-print(result)
+run_pipeline()
