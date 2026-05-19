@@ -131,7 +131,7 @@ celerybeat.pid
 .env
 .venv
 env/
-venv/
+1env/
 ENV/
 env.bak/
 venv.bak/
@@ -172,3 +172,16 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+# Google Auth
+token.pickle
+token.json
+credentials.json
+
+# Attachments
+attachments/
+
+# VS Code
+.vscode/
+
+# Jupyter notebooks checkpoints
+*.ipynb
